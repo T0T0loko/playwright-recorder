@@ -1,4 +1,10 @@
 {
+  "type": "module",
+  "name": "playwright-recorder",
+  ...
+}
+
+{
   "name": "playwright-recorder",
   "version": "1.0.0",
   "scripts": {
