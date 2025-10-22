@@ -1,4 +1,4 @@
-// server.js (versiÛn con logging y b˙squeda recursiva del ejecutable)
+// server.js
 import express from 'express';
 import { chromium } from 'playwright';
 import fs from 'fs';
@@ -9,29 +9,20 @@ const app = express();
 app.use(express.json());
 
 function listDir(p) {
-  try {
-    return fs.readdirSync(p);
-  } catch (e) {
-    return null;
-  }
+  try { return fs.readdirSync(p); } catch (e) { return null; }
 }
 
 function findExecutablesRecursively(baseDir) {
   const results = [];
   function walk(dir) {
     let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (e) {
-      return;
-    }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile()) {
         const name = entry.name.toLowerCase();
-        // nombres tÌpicos que Playwright usa
         if (name.includes('headless_shell') || name.includes('chrome') || name.includes('chromium')) {
           results.push(full);
         }
@@ -46,39 +37,50 @@ app.post('/record', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'Falta url' });
 
+  // 1) ruta dentro del repo (donde forc√© la instalaci√≥n)
+  const projectLocalBrowsers = path.join(process.cwd(), '.ms-playwright');
+  // 2) ruta de cache del sistema (fallback)
   const cacheBase = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/render/.cache/ms-playwright';
 
-  // Loguear contenido del cache para depuraciÛn
-  console.log('=== DEBUG: comprobando cache de playwright en:', cacheBase);
-  const top = listDir(cacheBase);
-  console.log('Contenido top-level de cacheBase:', util.inspect(top, { depth: 2 }));
+  console.log('=== DEBUG: comprobando cache de playwright en (project):', projectLocalBrowsers);
+  console.log('=== DEBUG: comprobando cache de playwright en (system):', cacheBase);
 
-  // Buscar candidatos recursivamente
-  const found = findExecutablesRecursively(cacheBase);
-  console.log('Resultados de b˙squeda recursiva de ejecutables (match chrome/headless/chromium):', found);
+  const topLocal = listDir(projectLocalBrowsers);
+  const topSystem = listDir(cacheBase);
+  console.log('Contenido top-level (local):', util.inspect(topLocal, { depth: 2 }));
+  console.log('Contenido top-level (system):', util.inspect(topSystem, { depth: 2 }));
 
-  // Filtrar por existencias
-  const exeCandidates = (found || []).filter(p => {
-    try {
-      return fs.existsSync(p) && fs.statSync(p).isFile();
-    } catch (e) {
-      return false;
-    }
-  });
+  // candidatos: primero en carpeta del repo, luego en cache del sistema
+  const candidates = [
+    path.join(projectLocalBrowsers, 'chromium-1194', 'chrome-linux', 'headless_shell'),
+    path.join(projectLocalBrowsers, 'chromium_headless_shell-1194', 'chrome-linux', 'headless_shell'),
+    path.join(projectLocalBrowsers, 'chromium-1194', 'chrome-linux', 'chrome'),
+    path.join(cacheBase, 'chromium_headless_shell-1194', 'chrome-linux', 'headless_shell'),
+    path.join(cacheBase, 'chromium-1194', 'chrome-linux', 'chrome'),
+    path.join(cacheBase, 'chromium-1194', 'chrome-linux', 'headless_shell')
+  ];
+
+  // b√∫squeda recursiva como fallback si los candidatos directos no existen
+  const foundRecursive = findExecutablesRecursively(projectLocalBrowsers).concat(findExecutablesRecursively(cacheBase));
+  console.log('Resultados de b√∫squeda recursiva (match chrome/headless/chromium):', foundRecursive);
+
+  // construir lista final de candidatos reales
+  const exeCandidates = [];
+  for (const c of candidates.concat(foundRecursive)) {
+    try { if (fs.existsSync(c) && fs.statSync(c).isFile()) exeCandidates.push(c); } catch (e) {}
+  }
 
   if (exeCandidates.length === 0) {
     const message = {
-      error: 'No se encontrÛ ejecutable Chromium en cache',
-      cacheBase,
-      topLevel: top,
-      recursiveFound: found
+      error: 'No se encontr√≥ ejecutable Chromium en cache ni en .ms-playwright',
+      projectLocal: topLocal,
+      systemCache: topSystem,
+      recursiveFound: foundRecursive
     };
     console.error('ERROR:', message);
-    // Devolver info mÌnima al cliente para que no quede en blanco (prod: quitar detalles)
     return res.status(500).json(message);
   }
 
-  // Elegir primer candidato razonable
   const exePath = exeCandidates[0];
   console.log('Usando ejecutable detectado:', exePath);
 
